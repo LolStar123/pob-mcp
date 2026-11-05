@@ -6,6 +6,14 @@ Uses an **unmodified [PathOfBuildingCommunity](https://github.com/PathOfBuilding
 
 > **PoE 3.29 compatibility:** This release targets Path of Building data and builds for the 3.29 league. Use a current PoB checkout for the matching tree, skills, and item data. Trade calls should always use `get_leagues` instead of hard-coding a challenge-league name.
 
+> **This fork ([LolStar123/pob-mcp](https://github.com/LolStar123/pob-mcp))** adds Windows support and fixes found while driving PoB headlessly:
+> - **Timeless jewels work headlessly.** Headless PoB has no `Inflate`, so every timeless jewel lookup table failed to load and conquered passives stayed vanilla (a 3.29 strength stacker lost 303 Strength and 16% DPS). `lua/zlib_ffi.lua` supplies `Inflate`/`Deflate` from PoB's own zlib. New tool `lua_get_timeless_jewels` reports every conquered passive.
+> - **Tree edits keep tattoos and runegrafts.** `set_tree` / tree deltas passed empty `hashOverrides`, stripping them on every edit.
+> - **Custom Modifiers can be set** via `set_config customMods` (current PoB stores them as groups, so the old path was rejected).
+> - **Windows:** `scripts/luajit_shim.py` runs PoB's own patched `lua51.dll` as a `luajit` command line (no compiler needed); `POB_ARGS` accepts a JSON array so paths with spaces work; the bridge process starts with no console window.
+>
+> All unit tests and the offline smoke suites pass on Windows against PoB v2.67.2.
+
 ---
 
 **☕ If you find this project helpful, consider [buying me a coffee](https://buymeacoffee.com/ianderse)!**
@@ -161,10 +169,11 @@ For a checkout or a nonstandard engine location, also set `POB_PATH` in that
 | `POB_DIRECTORY` | detected Builds dir | Path to your PoB builds directory |
 | `POB_LUA_ENABLED` | `false` | Set `"true"` to enable Lua bridge |
 | `POB_PATH` | installed PoB app, else `~/Projects/PathOfBuilding/src` | `src/` of a stock PathOfBuilding checkout. Usually unnecessary: an installed PoB is detected automatically (`POB_FORK_PATH` is a legacy alias) |
-| `POB_CMD` | `luajit` | Compatible LuaJIT executable; resolved through `PATH` unless an absolute path is supplied. Not detected from the app. |
+| `POB_CMD` | `luajit` | Compatible LuaJIT executable; resolved through `PATH` unless an absolute path is supplied. Not detected from the app. A path ending in `.py` (e.g. `scripts/luajit_shim.py`) is run with Python |
+| `POB_PYTHON` | `python` (Windows), `python3` | Python used when `POB_CMD` is a `.py` shim |
 | `POB_TIMEOUT_MS` | `30000` | Lua request timeout (ms) |
 | `POB_DEBUG` | `false` | Set `"true"` for verbose Lua bridge logging |
-| `POB_ARGS` | (none) | Space-separated arguments passed to the Lua process (overrides the default adapter arguments) |
+| `POB_ARGS` | (none) | Arguments passed to the Lua process (overrides the default adapter arguments). Space-separated, or a JSON array of strings when paths contain spaces |
 | `POE_TRADE_ENABLED` | `false` | Enable Trade API tools |
 | `POE_SESSION_ID` | (none) | Your POESESSID cookie value; required for the `find_weighted_trade_items` tool |
 | `POE_CACHE_TTL` | `300` | Trade API response cache TTL in seconds |
@@ -257,6 +266,41 @@ The bridge searches the checkout's `runtime/` and `~/.luarocks/lib/lua/5.1`.
 Follow any missing-module diagnostic for additional dependencies. Windows checkouts
 can use the bundled DLLs with a compatible interpreter and architecture.
 
+#### Windows
+
+There is no PoB-compatible `luajit.exe`, but PoB ships its patched LuaJIT as
+`runtime/lua51.dll`. `scripts/luajit_shim.py` hosts that DLL as a `luajit`-style
+command line using only the Python standard library (64-bit Python 3.8+):
+
+```json
+{
+  "mcpServers": {
+    "pob": {
+      "command": "node",
+      "args": ["C:/path/to/pob-mcp/build/index.js"],
+      "env": {
+        "POB_LUA_ENABLED": "true",
+        "POB_PATH": "C:/path/to/PathOfBuilding/src",
+        "POB_CMD": "C:/path/to/pob-mcp/scripts/luajit_shim.py"
+      }
+    }
+  }
+}
+```
+
+Use a checkout of the PoB release you play on (for example
+`git clone --depth 1 --branch v2.67.2 https://github.com/PathOfBuildingCommunity/PathOfBuilding.git`);
+the installed Windows app has no `HeadlessWrapper.lua`. The shim finds `lua51.dll`
+from `POB_RUNTIME`, the checkout's `runtime/`, or `POB_PATH`. Check it with
+`python scripts/luajit_shim.py -v`, then run the smoke tests with the same variables set.
+
+#### Timeless jewels
+
+Timeless jewel lookup tables are zlib data read through `Inflate`, which only the GUI
+provides. The adapter installs a zlib-backed `Inflate`/`Deflate` from PoB's runtime
+(`lua/zlib_ffi.lua`). `lua_get_timeless_jewels` shows whether it is working and lists
+each jewel's conquered passives; it warns if any jewel is silently doing nothing.
+
 The adapter uses the upstream `HeadlessWrapper.lua` without changing PoB source.
 It runs over stdio in a separate headless process. Use `lua_get_capabilities` for
 the loaded bridge's action list.
@@ -302,8 +346,8 @@ Finally, update the Claude Desktop configuration above and restart Claude Deskto
 ## Available Tools
 
 With `POB_LUA_ENABLED=true`, `POE_TRADE_ENABLED=true`, and `POE_SESSION_ID` set,
-the server advertises **104 tools**. It advertises **39** with Lua and Trade disabled,
-and **95** with Lua enabled and Trade disabled. Tool discovery is not a guarantee
+the server advertises **105 tools**. It advertises **39** with Lua and Trade disabled,
+and **96** with Lua enabled and Trade disabled. Tool discovery is not a guarantee
 that the required engine, data files, credentials, or network service are usable.
 
 ### XML-Based Tools (Always Available)
@@ -358,6 +402,7 @@ PoB installation or checkout containing the relevant mod tables.
 | `set_character_level` | Set level and recalculate all stats |
 | `lua_get_stats` | Get calculated stats (`category`: `offense`/`defense`/`all`) |
 | `lua_get_ailments` | Non-damaging ailment magnitude, and whether the DPS calc is crediting it |
+| `lua_get_timeless_jewels` | Timeless jewels as applied: seed, conqueror, lookup-table status, every conquered passive |
 | `lua_get_tree` | View passive tree: class, ascendancy, all allocated node IDs |
 | `lua_set_tree` | Replace passive tree allocation (preserves class if omitted) |
 | `update_tree_delta` | Add/remove individual nodes without replacing entire tree |

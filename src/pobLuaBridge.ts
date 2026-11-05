@@ -307,6 +307,38 @@ export interface AilmentReport {
   }>;
 }
 
+/** A passive conquered by a timeless jewel, as PoB's calculation now sees it. */
+export interface ConqueredNode {
+  nodeId: number;
+  /** Name after conquest (differs from originalName when the node was replaced). */
+  name: string;
+  originalName?: string;
+  type: string;
+  allocated: boolean;
+  stats: string[];
+}
+
+export interface TimelessJewel {
+  itemId: number;
+  name: string;
+  socketNodeId: number;
+  socketAllocated: boolean;
+  seed: number;
+  conqueror: { type: string; id: number };
+  /** PoB's internal timeless type (1 Glorious Vanity .. 6 Heroic Tragedy, 7-11 Abyss). */
+  jewelType?: number;
+  /** False means the lookup table never loaded, so the jewel does nothing. */
+  lutLoaded: boolean;
+  conqueredCount: number;
+  conquered: ConqueredNode[];
+}
+
+export interface TimelessJewelsReport {
+  /** Whether Inflate works in this engine. Without it no timeless jewel can apply. */
+  zlib: boolean;
+  jewels: TimelessJewel[];
+}
+
 export class PoBLuaApiClient {
   private loadedFilePath?: string;
   private buildGeneration = 0;
@@ -370,6 +402,9 @@ export class PoBLuaApiClient {
         cwd: this.options.cwd,
         env,
         stdio: ["pipe", "pipe", "pipe"],
+        // A GUI-hosted MCP server (Claude Desktop) would otherwise flash a console
+        // window for the bridge on Windows.
+        windowsHide: true,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -835,6 +870,24 @@ async setTree(params: {
     const res = await this.send({ action: "get_mastery_options" });
     if (!res.ok) throw new Error(res.error || "get_mastery_options failed");
     return res.result as MasteryOptions;
+  }
+
+  async getTimelessJewels(): Promise<TimelessJewelsReport> {
+    const res = await this.send({ action: "get_timeless_jewels" });
+    if (!res.ok) throw new Error(res.error || "get_timeless_jewels failed");
+    const result = res.result as Partial<TimelessJewelsReport> | undefined;
+    if (!result || typeof result !== "object" || typeof result.zlib !== "boolean") {
+      throw new Error("get_timeless_jewels returned an unexpected shape");
+    }
+    // dkjson encodes an empty Lua table as {} rather than [].
+    const asArray = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+    return {
+      zlib: result.zlib,
+      jewels: asArray<TimelessJewel>(result.jewels).map((j) => ({
+        ...j,
+        conquered: asArray<ConqueredNode>(j.conquered).map((n) => ({ ...n, stats: asArray<string>(n.stats) })),
+      })),
+    };
   }
 
   async getAilments(): Promise<{ ailments: AilmentReport[] }> {

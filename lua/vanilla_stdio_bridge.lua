@@ -13,8 +13,24 @@ if not GetVirtualScreenSize then
   function GetVirtualScreenSize() return 1920, 1080 end
 end
 
+-- Headless PoB has no real Inflate/Deflate, which silently disables every timeless
+-- jewel (their lookup tables are zlib data). Supply them from PoB's own zlib before
+-- the wrapper runs, and again after it in case the wrapper installs its stubs.
+local Zlib = dofile(ADAPTER_DIR .. 'zlib_ffi.lua')
+local function installZlib()
+  if not Zlib then return end
+  if Zlib.isStubInflate(rawget(_G, 'Inflate')) then
+    Inflate, Deflate = Zlib.Inflate, Zlib.Deflate
+  end
+end
+installZlib()
+
 -- The upstream wrapper initializes PoB and exposes newBuild/loadBuildFromXML plus `build`.
 dofile('HeadlessWrapper.lua')
+installZlib()
+if Zlib == nil or Zlib.isStubInflate(Inflate) then
+  io.stderr:write('[pob-mcp] WARNING: no working zlib; timeless jewels will have no effect\n')
+end
 
 local BuildOps = dofile(ADAPTER_DIR .. 'pob_ops.lua')
 
@@ -248,6 +264,7 @@ handlers.create_socket_group = op(BuildOps.create_socket_group, 'socketGroup')
 handlers.add_gem = op(BuildOps.add_gem, 'gem')
 handlers.search_nodes = op(BuildOps.search_nodes, 'results')
 handlers.get_mastery_options = op(BuildOps.get_mastery_options, 'result')
+handlers.get_timeless_jewels = op(BuildOps.get_timeless_jewels, 'result')
 handlers.get_ailments = op(BuildOps.get_ailments, 'result')
 handlers.save_build = op(BuildOps.save_build, 'result')
 handlers.list_specs = op(BuildOps.list_specs, 'result')

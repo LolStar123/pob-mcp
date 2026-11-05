@@ -485,6 +485,19 @@ export function getLuaToolSchemas(): ToolSchema[] {
       },
     },
     {
+      name: "lua_get_timeless_jewels",
+      description: "List timeless jewels (Glorious Vanity, Lethal Pride, Brutal Restraint, Militant Faith, Elegant Hubris, Heroic Tragedy, and the Abyss eye jewels) as the engine actually applied them: seed, conqueror, whether the lookup table loaded, and every conquered passive with its post-conquest stats. Call this for any build with a timeless jewel before trusting its numbers, and after swapping seeds or sockets.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          include_unallocated: {
+            type: "boolean",
+            description: "Also list conquered passives in range that are not allocated (useful when deciding where to path). Default false.",
+          },
+        },
+      },
+    },
+    {
       name: "lua_get_ailments",
       description: "Show non-damaging ailments (Shock, Chill, Scorch, Brittle, Sap) with what the DPS calculation is actually crediting next to what the main skill would inflict on the configured enemy. Call this for any build that shocks or chills: PoB applies a chance-based ailment only when its magnitude is entered by hand, so an uncounted shock silently understates every DPS figure. Magnitude is measured for the MAIN skill against the CURRENT enemy config, and it falls off steeply with enemy life, so re-read it per enemy rather than quoting one number for all content.",
       inputSchema: { type: "object", properties: {} },
@@ -1115,7 +1128,7 @@ export function getConfigToolSchemas(): ToolSchema[] {
     },
     {
       name: "set_config",
-      description: "Modify configuration inputs. Common keys — Charges: usePowerCharges, useFrenzyCharges, useEnduranceCharges | Conditions: buffFortification, conditionLeeching, conditionFullLife, conditionFullEnergyShield | Buffs: buffOnslaught | Enemy: enemyIsBoss ('None'/'Boss'/'Pinnacle'/'Uber'; legacy names 'Shaper'/'Sirus' map to 'Pinnacle', 'Atziri'/'Uber Atziri' to 'Boss'), enemyLevel | Build: bandit ('None'/'Oak'/'Alira'/'Kraityn'), pantheonMajorGod, pantheonMinorGod. Values outside an option's accepted set are rejected per key, never silently ignored. Call get_config to see all current values.",
+      description: "Modify configuration inputs. Common keys — Charges: usePowerCharges, useFrenzyCharges, useEnduranceCharges | Conditions: buffFortification, conditionLeeching, conditionFullLife, conditionFullEnergyShield | Buffs: buffOnslaught | Enemy: enemyIsBoss ('None'/'Boss'/'Pinnacle'/'Uber'; legacy names 'Shaper'/'Sirus' map to 'Pinnacle', 'Atziri'/'Uber Atziri' to 'Boss'), enemyLevel | Build: bandit ('None'/'Oak'/'Alira'/'Kraityn'), pantheonMajorGod, pantheonMinorGod | Custom Modifiers: customMods (newline-separated modifier text such as '50% chance to Suppress Spell Damage'; stored in its own 'pob-mcp' group so the build's own groups are untouched, '' clears it, unparseable lines are reported). Values outside an option's accepted set are rejected per key, never silently ignored. Call get_config to see all current values.",
       inputSchema: {
         type: "object",
         properties: {

@@ -68,6 +68,14 @@ end
 -- ids/effects are coerced to numbers. That way the invariant holds for every
 -- caller, present and future, instead of each one having to re-implement it.
 function M.import_from_node_list(spec, classId, ascendId, secondaryId, nodes, overrides, mastery, treeVersion)
+  -- ImportFromNodeList replaces spec.hashOverrides wholesale. Those overrides are the
+  -- build's tattoos and runegrafts, so passing {} quietly strips them on every tree
+  -- edit (a 3.29 build with 19 of them lost 7% DPS and 29% EHP on an identity
+  -- re-import). PoB's own undo path passes a copy of the current overrides; so do we.
+  if (overrides == nil or next(overrides) == nil) and spec.hashOverrides then
+    overrides = {}
+    for id, override in pairs(spec.hashOverrides) do overrides[id] = override end
+  end
   local mergedMastery = {}
   for k, v in pairs(spec.masterySelections or {}) do mergedMastery[k] = v end
   if type(mastery) == 'table' then
@@ -604,8 +612,48 @@ function M.set_config(params)
       local alias = LEGACY_BOSS_ALIASES[value:lower()]
       if alias then value = alias end
     end
+    -- Custom Modifiers are not a ConfigOptions var. Current PoB keeps them as named
+    -- groups (configSet.customModsList); older PoB read input.customMods. Write a
+    -- dedicated "pob-mcp" group so the user's own groups are never overwritten, and
+    -- report any line PoB cannot parse instead of silently dropping it.
+    if key == 'customMods' then
+      if type(value) ~= 'string' then
+        rejected[key] = 'expected a string of modifier lines'
+      else
+        local tab = build.configTab
+        local set = tab.configSets and tab.configSets[tab.activeConfigSetId]
+        if set and set.customModsList then
+          local block
+          for i, b in ipairs(set.customModsList) do
+            if b.title == 'pob-mcp' then block = b; if value == '' then table.remove(set.customModsList, i) end; break end
+          end
+          if value ~= '' then
+            if not block then
+              block = { title = 'pob-mcp', enabled = true, text = '' }
+              table.insert(set.customModsList, block)
+            end
+            block.text, block.enabled = value, true
+          end
+          if #set.customModsList == 0 then
+            table.insert(set.customModsList, { title = 'Default', enabled = true, text = '' })
+          end
+        else
+          input.customMods = value
+        end
+        local unparsed = {}
+        for line in value:gmatch('([^\n]*)\n?') do
+          local stripped = line:match('^%s*(.-)%s*$')
+          if stripped ~= '' then
+            local mods, extra = modLib.parseMod(stripped)
+            if not mods or extra then table.insert(unparsed, stripped) end
+          end
+        end
+        applied[key] = value
+        if #unparsed > 0 then rejected.customModsUnparsed = table.concat(unparsed, ' | ') end
+        changed = true
+      end
     -- enemyLevel lives on the tab itself, not in the input table.
-    if key == 'enemyLevel' then
+    elseif key == 'enemyLevel' then
       local n = tonumber(value)
       if n then
         build.configTab.enemyLevel = n
@@ -1418,6 +1466,68 @@ function M.get_mastery_options()
     end
   end
   return { masteries = result }
+end
+
+-- Timeless jewels as PoB actually applied them. For each socketed timeless jewel:
+-- its seed, conqueror, whether its lookup table loaded, and every passive it
+-- conquered with the stats PoB now gives that passive. A jewel whose `loaded` is
+-- false, or that conquers nothing while allocated, is a silent no-op in the calc.
+-- Output: { zlib = bool, jewels = [ { itemId, name, socketNodeId, socketAllocated,
+--   seed, conqueror = {type, id}, jewelType, lutLoaded, conquered = [ { nodeId,
+--   name, originalName, type, allocated, stats = [string] } ] } ] }
+local TIMELESS_TYPE_BY_CONQUEROR = {
+  vaal = 1, karui = 2, maraketh = 3, templar = 4, eternal = 5, kalguur = 6,
+  abyss_murderous = 7, abyss_searching = 8, abyss_hypnotic = 9, abyss_ghastly = 10, abyss_special = 11,
+}
+function M.get_timeless_jewels()
+  if not build or not build.spec or not build.itemsTab then return nil, 'build/spec not initialized' end
+  local spec = build.spec
+  local probe = Deflate and Deflate('timeless') or nil
+  local zlibOk = probe ~= nil and probe ~= '' and Inflate and Inflate(probe) == 'timeless' or false
+  local jewels = {}
+  for socketId, itemId in pairs(spec.jewels or {}) do
+    local item = build.itemsTab.items[itemId]
+    local conqueredBy = item and item.jewelData and item.jewelData.conqueredBy
+    if conqueredBy then
+      local jewelType = TIMELESS_TYPE_BY_CONQUEROR[conqueredBy.conqueror and conqueredBy.conqueror.type]
+      local lut = data and data.timelessJewelLUTs and jewelType and data.timelessJewelLUTs[jewelType]
+      local conquered = {}
+      for id, node in pairs(spec.nodes) do
+        if node.conqueredBy and node.type ~= 'Socket' and node.conqueredBy.id == conqueredBy.id
+          and node.conqueredBy.conqueror and node.conqueredBy.conqueror.type == conqueredBy.conqueror.type then
+          local original = spec.tree.nodes[id]
+          local stats = {}
+          for _, line in ipairs(node.sd or {}) do table.insert(stats, line) end
+          table.insert(conquered, {
+            nodeId = id,
+            name = node.dn,
+            originalName = original and original.dn or nil,
+            type = node.type,
+            allocated = spec.allocNodes[id] ~= nil,
+            stats = stats,
+          })
+        end
+      end
+      table.sort(conquered, function(a, b)
+        if a.allocated ~= b.allocated then return a.allocated end
+        return a.nodeId < b.nodeId
+      end)
+      table.insert(jewels, {
+        itemId = itemId,
+        name = item.title or item.name,
+        socketNodeId = socketId,
+        socketAllocated = spec.allocNodes[socketId] ~= nil,
+        seed = conqueredBy.id,
+        conqueror = { type = conqueredBy.conqueror.type, id = conqueredBy.conqueror.id },
+        jewelType = jewelType,
+        lutLoaded = lut ~= nil and (lut.data ~= nil or next(lut) ~= nil),
+        conqueredCount = #conquered,
+        conquered = conquered,
+      })
+    end
+  end
+  table.sort(jewels, function(a, b) return a.socketNodeId < b.socketNodeId end)
+  return { zlib = zlibOk, jewels = jewels }
 end
 
 
