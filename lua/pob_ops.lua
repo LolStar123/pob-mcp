@@ -517,8 +517,12 @@ function M.calc_with(params)
     end
     build.spec.masterySelections = build.spec.masterySelections or {}
     for nodeId, effectId in pairs(params.masteryEffects) do
-      build.spec.masterySelections[tonumber(nodeId)] = effectId
+      build.spec.masterySelections[tonumber(nodeId)] = tonumber(effectId) or effectId
     end
+    -- A mastery's stats live on node.sd/modList, which PoB only rewrites from
+    -- masterySelections inside BuildAllDependsAndPaths. Without this rebuild the
+    -- override was ignored and every mastery simulation returned current stats.
+    build.spec:BuildAllDependsAndPaths()
   end
   -- pcall returns (ok, result...): the first value is the success flag, not
   -- the stats table. Reading it as the result made every simulation silently
@@ -529,6 +533,7 @@ function M.calc_with(params)
   -- persist masteries the caller never committed.
   if origMastery then
     build.spec.masterySelections = origMastery
+    build.spec:BuildAllDependsAndPaths()
   end
   if not calcOk then
     return nil, 'calc_with failed: ' .. tostring(out)
@@ -1439,6 +1444,45 @@ function M.search_nodes(params)
   return { nodes = results, count = #results }
 end
 
+-- Whole passive graph for path planning: every node with type, stats (as currently
+-- shown, so tattoos/timeless conquests are reflected), allocation and neighbour ids.
+-- params.ascendancy=false (default) skips ascendancy nodes; params.ids limits output.
+function M.get_tree_graph(params)
+  if not build or not build.spec then return nil, 'build/spec not initialized' end
+  params = type(params) == 'table' and params or {}
+  local only
+  if type(params.ids) == 'table' then
+    only = {}
+    for _, id in ipairs(params.ids) do only[tonumber(id)] = true end
+  end
+  local out = {}
+  for id, node in pairs(build.spec.nodes) do
+    if (not only or only[id]) and (params.ascendancy or not node.ascendancyName) then
+      local t = 'normal'
+      if node.isKeystone then t = 'keystone'
+      elseif node.isNotable then t = 'notable'
+      elseif node.isJewelSocket then t = 'jewel'
+      elseif node.type == 'Mastery' or node.isMastery then t = 'mastery'
+      elseif node.type == 'ClassStart' or node.isClassStart then t = 'classStart'
+      elseif node.ascendancyName then t = 'ascendancy' end
+      local links = {}
+      for _, other in ipairs(node.linked or {}) do
+        if other and other.id then table.insert(links, other.id) end
+      end
+      local stats = {}
+      for _, s in ipairs(node.sd or {}) do if type(s) == 'string' then table.insert(stats, s) end end
+      table.insert(out, {
+        id = id, name = node.name or '', type = t, stats = stats, links = links,
+        allocated = node.alloc == true, ascendancyName = node.ascendancyName,
+        isBlighted = node.isBlighted == true, isProxy = node.isProxy == true,
+        group = node.g or (node.group and node.group.id) or nil, x = node.x, y = node.y,
+        conqueredBy = node.conqueredBy and node.conqueredBy.conqueror and node.conqueredBy.conqueror.type or nil,
+      })
+    end
+  end
+  return { nodes = out, count = #out, pointsUsed = (build.spec.GetAllocatedNodeCount and build.spec:GetAllocatedNodeCount()) or nil }
+end
+
 -- Returns all allocated mastery nodes and the available effect options for each.
 -- Output: { masteries: [ { nodeId, nodeName, allocatedEffect, availableEffects: [{effectId, stat}] } ] }
 function M.get_mastery_options()
@@ -1528,6 +1572,42 @@ function M.get_timeless_jewels()
   end
   table.sort(jewels, function(a, b) return a.socketNodeId < b.socketNodeId end)
   return { zlib = zlibOk, jewels = jewels }
+end
+
+-- Debug view of where the main skill's damage comes from: every MORE/INC/BASE/
+-- OVERRIDE mod on the named stats (default: generic damage), with value and source,
+-- plus the player's multipliers/conditions. Read-only; used to explain surprising deltas.
+function M.get_mod_breakdown(params)
+  local output, err = M.get_main_output()
+  if not output then return nil, err end
+  params = type(params) == 'table' and params or {}
+  local env = build.calcsTab.mainEnv or build.calcsTab.calcsEnv
+  local player = env and env.player
+  if not player or not player.mainSkill then return nil, 'no main skill' end
+  local skill = player.mainSkill
+  local names = params.names or { 'Damage', 'PhysicalDamage', 'ChaosDamage', 'FireDamage', 'ColdDamage', 'LightningDamage', 'ElementalDamage' }
+  local types = params.types or { 'MORE', 'INC' }
+  local cfg = skill.skillCfg
+  local rows = {}
+  for _, modType in ipairs(types) do
+    for _, name in ipairs(names) do
+      local ok, tab = pcall(function() return skill.skillModList:Tabulate(modType, cfg, name) end)
+      if ok and tab then
+        for _, t in ipairs(tab) do
+          local mod = t.mod or {}
+          table.insert(rows, { type = modType, name = mod.name or name, value = t.value,
+            source = tostring(mod.source or '?'), tags = mod[1] and mod[1].type or nil, tagVar = mod[1] and (mod[1].var or mod[1].stat) or nil,
+            tagDiv = mod[1] and mod[1].div or nil, tagLimit = mod[1] and mod[1].limit or nil })
+        end
+      end
+    end
+  end
+  local mult = {}
+  for k, v in pairs(player.modDB.multipliers or {}) do mult[k] = v end
+  local cond = {}
+  for k, v in pairs(player.modDB.conditions or {}) do if v then table.insert(cond, k) end end
+  table.sort(cond)
+  return { mods = rows, multipliers = mult, conditions = cond }
 end
 
 
