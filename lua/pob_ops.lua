@@ -1471,9 +1471,10 @@ function M.get_tree_graph(params)
   for id, node in pairs(build.spec.nodes) do
     if (not only or only[id]) and (params.ascendancy or not node.ascendancyName) then
       local t = 'normal'
-      if node.isKeystone then t = 'keystone'
-      elseif node.isNotable then t = 'notable'
-      elseif node.isJewelSocket then t = 'jewel'
+      -- cluster-jewel subgraph nodes (ids > 65535) only carry PoB's string node.type, not the is* flags
+      if node.isKeystone or node.type == 'Keystone' then t = 'keystone'
+      elseif node.isNotable or node.type == 'Notable' then t = 'notable'
+      elseif node.isJewelSocket or node.type == 'Socket' then t = 'jewel'
       elseif node.type == 'Mastery' or node.isMastery then t = 'mastery'
       elseif node.type == 'ClassStart' or node.isClassStart then t = 'classStart'
       elseif node.ascendancyName then t = 'ascendancy' end
@@ -1484,7 +1485,7 @@ function M.get_tree_graph(params)
       local stats = {}
       for _, s in ipairs(node.sd or {}) do if type(s) == 'string' then table.insert(stats, s) end end
       table.insert(out, {
-        id = id, name = node.name or '', type = t, stats = stats, links = links,
+        id = id, name = node.dn or node.name or '', type = t, cluster = id > 65535 or nil, stats = stats, links = links,
         allocated = node.alloc == true, ascendancyName = node.ascendancyName,
         isBlighted = node.isBlighted == true, isProxy = node.isProxy == true,
         group = node.g or (node.group and node.group.id) or nil, x = node.x, y = node.y,
